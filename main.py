@@ -1,13 +1,20 @@
 import logging
 
-from fastapi import FastAPI, HTTPException, Request
+import base64
+import time
+
+import anyio
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.deps import enforce_api_key
 from app.api.v1.router import api_v1_router
 from app.core.logging import configure_logging
 from app.core.rate_limit import RateLimitMiddleware
 from app.core.settings import Settings
+from app.schemas.api import VoiceDetectionRequest, VoiceDetectionResponse
+from app.services.audio_io import AudioDecodeError, decode_audio_bytes
 from app.services.heuristic_detector import HeuristicVoiceDetector
 from app.services.preprocess import SUPPORTED_LANGUAGES
 
@@ -38,6 +45,36 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware, requests_per_minute=settings.rate_limit_rpm)
 
     app.include_router(api_v1_router, prefix="/api/v1")
+
+    @app.post("/api/voice-detection", response_model=VoiceDetectionResponse, dependencies=[Depends(enforce_api_key)])
+    async def voice_detection(payload: VoiceDetectionRequest, request: Request) -> VoiceDetectionResponse:
+        started = time.perf_counter()
+        try:
+            audio_bytes = base64.b64decode(payload.audioBase64, validate=True)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {e}") from e
+
+        filename = f"upload.{payload.audioFormat}"
+        try:
+            decoded = await anyio.to_thread.run_sync(
+                decode_audio_bytes,
+                audio_bytes,
+                filename=filename,
+                target_sample_rate=16000,
+            )
+        except AudioDecodeError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        detector = request.app.state.detector
+        result = await anyio.to_thread.run_sync(detector.detect, decoded.waveform, decoded.sample_rate, payload.language)
+        processing_ms = (time.perf_counter() - started) * 1000.0
+
+        return VoiceDetectionResponse(
+            language=payload.language,
+            classification=result.classification,
+            confidenceScore=result.confidence_score,
+            explanation=result.explanation,
+        )
 
     @app.get("/")
     async def root() -> dict:

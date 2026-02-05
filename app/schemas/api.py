@@ -31,3 +31,16 @@ class HealthResponse(BaseModel):
 class LanguagesResponse(BaseModel):
     languages: list[SupportedLanguage]
 
+
+class VoiceDetectionRequest(BaseModel):
+    language: SupportedLanguage
+    audioFormat: Literal["mp3", "wav", "flac"]
+    audioBase64: str = Field(..., min_length=1)
+
+
+class VoiceDetectionResponse(BaseModel):
+    status: Literal["success"] = "success"
+    language: SupportedLanguage
+    classification: Literal["AI_GENERATED", "HUMAN"]
+    confidenceScore: float = Field(..., ge=0.0, le=1.0)
+    explanation: str

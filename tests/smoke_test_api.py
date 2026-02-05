@@ -16,7 +16,6 @@ def main() -> int:
     print("GET /languages", r.status_code, r.text)
     r.raise_for_status()
 
-    # Use provided file or default to sample-two(Human).mp3
     default_sample = "sample-two(Human).mp3"
     target_sample = sys.argv[1] if len(sys.argv) > 1 else default_sample
     
