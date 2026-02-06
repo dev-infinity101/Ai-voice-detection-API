@@ -25,3 +25,6 @@ dist/
 
 tuning_results.json
 models/
+
+docs/
+railway deployment guide.md
