@@ -1,9 +1,15 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, BeforeValidator, Field
 
 
 SupportedLanguage = Literal["Tamil", "English", "Hindi", "Malayalam", "Telugu"]
+
+
+def strip_whitespace(v: str) -> str:
+    if isinstance(v, str):
+        return v.strip()
+    return v
 
 
 class ErrorResponse(BaseModel):
@@ -33,9 +39,18 @@ class LanguagesResponse(BaseModel):
 
 
 class VoiceDetectionRequest(BaseModel):
-    language: SupportedLanguage
-    audioFormat: Literal["mp3", "wav", "flac"]
-    audioBase64: str = Field(..., min_length=1)
+    language: Annotated[SupportedLanguage, BeforeValidator(strip_whitespace)]
+    audioFormat: Annotated[Literal["mp3", "wav", "flac"], BeforeValidator(strip_whitespace)]
+    audioBase64: Annotated[
+        str,
+        BeforeValidator(strip_whitespace),
+        Field(
+            ...,
+            min_length=1,
+            validation_alias=AliasChoices("audioBase64", "audioBase64Format"),
+            serialization_alias="audioBase64",
+        ),
+    ]
 
 
 class VoiceDetectionResponse(BaseModel):

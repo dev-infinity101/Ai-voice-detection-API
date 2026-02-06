@@ -1,10 +1,13 @@
 import logging
 
 import base64
+import functools
+import re
 import time
 
 import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -46,24 +49,44 @@ def create_app() -> FastAPI:
 
     app.include_router(api_v1_router, prefix="/api/v1")
 
+    def _decode_audio_base64(raw: str) -> bytes:
+        b64_data = raw.strip()
+        if b64_data.startswith('"') and b64_data.endswith('"') and len(b64_data) >= 2:
+            b64_data = b64_data[1:-1].strip()
+        if b64_data.startswith("data:") and "base64," in b64_data:
+            b64_data = b64_data.split("base64,", 1)[1]
+        elif "," in b64_data:
+            b64_data = b64_data.split(",", 1)[-1]
+        b64_data = re.sub(r"\s+", "", b64_data)
+        padding = (-len(b64_data)) % 4
+        if padding:
+            b64_data = f"{b64_data}{'=' * padding}"
+        try:
+            return base64.b64decode(b64_data, validate=True)
+        except Exception:
+            try:
+                return base64.urlsafe_b64decode(b64_data)
+            except Exception as e_inner:
+                raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {e_inner}") from e_inner
+
     @app.post("/api/voice-detection", response_model=VoiceDetectionResponse, dependencies=[Depends(enforce_api_key)])
     async def voice_detection(payload: VoiceDetectionRequest, request: Request) -> VoiceDetectionResponse:
         started = time.perf_counter()
-        try:
-            audio_bytes = base64.b64decode(payload.audioBase64, validate=True)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {e}") from e
+        audio_bytes = _decode_audio_base64(payload.audioBase64)
 
         filename = f"upload.{payload.audioFormat}"
         try:
-            decoded = await anyio.to_thread.run_sync(
+            decode_fn = functools.partial(
                 decode_audio_bytes,
                 audio_bytes,
                 filename=filename,
                 target_sample_rate=16000,
             )
+            decoded = await anyio.to_thread.run_sync(decode_fn)
         except AudioDecodeError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to decode audio: {e}") from e
 
         detector = request.app.state.detector
         result = await anyio.to_thread.run_sync(detector.detect, decoded.waveform, decoded.sample_rate, payload.language)
@@ -93,6 +116,10 @@ def create_app() -> FastAPI:
             extra={"status_code": exc.status_code, "detail": exc.detail, "path": request.url.path},
         )
         return JSONResponse(status_code=exc.status_code, content={"status": "error", "message": exc.detail})
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(status_code=422, content={"status": "error", "message": "Invalid request body"})
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
